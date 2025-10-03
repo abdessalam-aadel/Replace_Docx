@@ -7,7 +7,6 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 using System.Windows.Forms;
-using System.Xml.Linq;
 using Word = Microsoft.Office.Interop.Word;
 
 namespace Replace_Docx
@@ -240,6 +239,10 @@ namespace Replace_Docx
 
             // Check if the text exists by executing the find operation
             bool textExists = findObject.Execute();
+
+            if (findText == "")
+                return (replacementCount, totalCount, textExists);
+
 
             // If text is found, count occurrences and perform replacements
             if (textExists)
