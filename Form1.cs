@@ -5,7 +5,9 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Text.RegularExpressions;
 using System.Windows.Forms;
+using System.Xml.Linq;
 using Word = Microsoft.Office.Interop.Word;
 
 namespace Replace_Docx
@@ -212,7 +214,8 @@ namespace Replace_Docx
         {
             int replacementCount = 0;
             int totalCount = 0;  // Counter for all found occurrences
-            bool textExists = false; // Flag to check if the text exists in the document
+
+            Word.Document doc = wordApp.ActiveDocument;
 
             // Get the Find object from Word
             Word.Find findObject = wordApp.Selection.Find;
@@ -236,7 +239,7 @@ namespace Replace_Docx
             object replaceAll = Word.WdReplace.wdReplaceAll;
 
             // Check if the text exists by executing the find operation
-            textExists = findObject.Execute();
+            bool textExists = findObject.Execute();
 
             // If text is found, count occurrences and perform replacements
             if (textExists)
@@ -246,12 +249,6 @@ namespace Replace_Docx
                 {
                     totalCount++;  // Increment total count without replacing
                 }
-
-                //// Loop through and replace all occurrences
-                //while (findObject.Execute(Replace: ref replaceAll))
-                //{
-                //    replacementCount++;  // Increment the count each time a replacement is made
-                //}
 
                 // Perform the replacements
                 while (true)
@@ -263,6 +260,23 @@ namespace Replace_Docx
                     }
 
                     replacementCount++;  // Increment the count each time a replacement is made
+                }
+            }
+
+            // --- PART 2: Replace in text boxes / shapes with TextFrames ---
+            foreach (Word.Shape shape in doc.Shapes)
+            {
+                if (shape.TextFrame.HasText != 0)
+                {
+                    string shapeText = shape.TextFrame.TextRange.Text;
+                    if (shapeText.Contains(findText))
+                    {
+                        totalCount++;
+                        shapeText = shapeText.Replace(findText, replaceText);
+                        shape.TextFrame.TextRange.Text = shapeText;
+                        replacementCount++;
+                        textExists = true;
+                    }
                 }
             }
 
@@ -448,6 +462,21 @@ namespace Replace_Docx
                     {
                         Range paraRange = para.Range;
                         lastPageContent += paraRange.Text;
+                    }
+
+                    Word.Bookmarks bookmarks = doc.Bookmarks;
+                    if (bookmarks.Exists("MyBookmark"))
+                    {
+                        Word.Range bookmarkRange = bookmarks["MyBookmark"].Range;
+                        LogException(logFilePathShow, file, "Bookmark : " + Environment.NewLine + bookmarkRange.Text);
+                    }
+
+                    foreach (Word.Shape shape in doc.Shapes)
+                    {
+                        if (shape.TextFrame.HasText != 0)
+                        {
+                            LogException(logFilePathShow, file, "TextFrame : " + Environment.NewLine + shape.TextFrame.TextRange.Text);
+                        }
                     }
 
                     LogException(logFilePathShow, file, Environment.NewLine + $"\"{lastPageContent}\"");
@@ -657,6 +686,140 @@ namespace Replace_Docx
                         LogException(logFilePath, file, "1er : " + replacementsMade + " No replacements were made.");
                         LogException(logFilePath, file, "2eme : " + replacementsMade2 + " No replacements were made.");
                         LogException(logFilePath, file, "3eme : " + replacementsMade3 + " No replacements were made.");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    // Write Exception into exceptions.log
+                    LogException(logFilePath, file, ex.Message);
+                    // Continue to the next iteration
+                    continue;
+                }
+
+                finally
+                {
+                    // Always close the document properly
+                    if (doc != null)
+                    {
+                        doc.Close();
+                        Marshal.ReleaseComObject(doc);
+                        doc = null;
+                    }
+                }
+            }
+
+            // Quit the Word application
+            wordApp.Quit();
+            Marshal.ReleaseComObject(wordApp);
+            wordApp = null;
+
+            // Clear string array
+            DOCXfiles = null;
+            Cursor = Cursors.Default;
+            TxtBoxLoad.Text = "Chose your folder location ...";
+            labelInfo.Text = "Done.";
+        }
+
+        private void btnReplaceSurface_Click(object sender, EventArgs e)
+        {
+            if (DOCXfiles == null || string.IsNullOrEmpty(TxtBoxLoad.Text))
+            {
+                labelErrorMessage.Text = "No source folder was selected, Please select one.";
+                return;
+            }
+
+            else if (DOCXfiles.Length == 0)
+            {
+                labelErrorMessage.Text = "No DOCX file was found in the selected folder";
+                return;
+            }
+
+            labelErrorMessage.Text = "";
+            Cursor = Cursors.WaitCursor;
+            labelInfo.Text = "Processing ...";
+            labelErrorMessage.Text = "";
+
+            // Create a new instance of Microsoft Word through the Interop library
+            Word.Application wordApp = new Word.Application();
+            Word.Document doc = null;
+
+            // Log file
+            string logFilePath = selected_path + @"\exceptions.log";
+            // Delete the log file if it exists
+            if (File.Exists(logFilePath))
+            {
+                File.Delete(logFilePath);
+            }
+
+            foreach (string file in DOCXfiles)
+            {
+                try
+                {
+                    wordApp.Visible = false;
+                    object missing = System.Reflection.Missing.Value;
+                    // Open the document 
+                    doc = wordApp.Documents.Open(file);
+
+                    // Loop through all content controls in the document
+                    foreach (ContentControl contentControl in doc.ContentControls)
+                    {
+                        contentControl.Delete(); // Removes the content control
+                    }
+
+                    // Get the total number of pages in the document
+                    object what = WdGoToItem.wdGoToPage;
+                    object which = WdGoToDirection.wdGoToLast;
+                    Range lastPageRange = wordApp.Selection.GoTo(ref what, ref which);
+
+                    int lastPageNumber = lastPageRange.Information[WdInformation.wdActiveEndPageNumber];
+
+                    string lastPageContent = "";
+
+                    foreach (Paragraph para in doc.Paragraphs)
+                    {
+                        Range paraRange = para.Range;
+                        lastPageContent += paraRange.Text;
+                    }
+
+                    // Start First Regex to find Surface
+                    string pattern = @"\(\s*(?:A|CA|H)[A-Z0-9]*\)";
+                    Match match = Regex.Match(lastPageContent, pattern);
+                    if (match.Success)
+                    {
+                        string findText = match.Value;
+
+                        //Detect H an A, CA
+                        string clean = findText.Replace(" ", "").Trim('(', ')');  // → "A03CA59H0"
+
+                        // Start Second Regex to detect number
+                        string pattern2 = @"A(\d+?)CA(\d+?)H(\d+)";
+                        Match match2 = Regex.Match(clean, pattern2);
+
+                        if (match2.Success)
+                        {
+                            string part1 = match2.Groups[1].Value; // Between A and CA
+                            string part2 = match2.Groups[2].Value; // Between CA and H
+                            string part3 = match2.Groups[3].Value; // After H
+
+                            // Get the Find object from Word
+                            Word.Find findObject = doc.Content.Find;
+                            findObject.ClearFormatting();
+                            findObject.Text = findText;
+                            findObject.Replacement.ClearFormatting();
+
+                            findObject.Replacement.Text =  "( QQ" + part3 + " H " + part2 + " A " + part1 + " CA " + ") ";
+
+                            findObject.MatchCase = true; // For case-sensitive search
+                            findObject.MatchWholeWord = true; // For matching whole words only
+
+                            //Set to replace all occurrences
+                            object replaceAll = Word.WdReplace.wdReplaceAll;
+                            findObject.Execute(Replace: ref replaceAll);
+                            // Save and close
+                            doc.Save();
+
+                            LogException(logFilePath, file, " Replacement was successful.");
+                        }
                     }
                 }
                 catch (Exception ex)
